@@ -212,6 +212,8 @@ const allEnv = z.object({
 
   // Database configuration
   DB_WAL_MODE: stringBool("false"),
+  TURSO_DATABASE_URL: z.string().optional(),
+  TURSO_AUTH_TOKEN: z.string().optional(),
 
   // OpenTelemetry tracing configuration
   OTEL_TRACING_ENABLED: stringBool("false"),
