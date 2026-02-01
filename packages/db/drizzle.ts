@@ -1,35 +1,58 @@
 import "dotenv/config";
 
 import path from "path";
-import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import { migrate } from "drizzle-orm/better-sqlite3/migrator";
+import { fileURLToPath } from "url";
+import { createClient } from "@libsql/client";
+import { drizzle } from "drizzle-orm/libsql";
+import { migrate } from "drizzle-orm/libsql/migrator";
 
 import serverConfig from "@karakeep/shared/config";
 
 import dbConfig from "./drizzle.config";
 import * as schema from "./schema";
 
-const sqlite = new Database(dbConfig.dbCredentials.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
-if (serverConfig.database.walMode) {
-  sqlite.pragma("journal_mode = WAL");
-  sqlite.pragma("synchronous = NORMAL");
-} else {
-  sqlite.pragma("journal_mode = DELETE");
+// Tursoリモート or ローカルファイル
+const tursoUrl = process.env.TURSO_DATABASE_URL;
+const tursoToken = process.env.TURSO_AUTH_TOKEN;
+
+const client = createClient(
+  tursoUrl
+    ? { url: tursoUrl, authToken: tursoToken }
+    : { url: `file:${dbConfig.dbCredentials.url}`, concurrency: 0 },
+);
+
+// PRAGMAs設定（ローカルファイルの場合のみ）
+async function configurePragmas() {
+  if (tursoUrl) return; // Tursoリモートでは不要
+
+  if (serverConfig.database.walMode) {
+    await client.execute("PRAGMA journal_mode = WAL");
+    await client.execute("PRAGMA synchronous = NORMAL");
+  } else {
+    await client.execute("PRAGMA journal_mode = DELETE");
+  }
+  await client.execute("PRAGMA foreign_keys = ON");
+  await client.execute("PRAGMA temp_store = MEMORY");
+  await client.execute("PRAGMA cache_size = -65536");
+  await client.execute("PRAGMA busy_timeout = 20000");
 }
-sqlite.pragma("cache_size = -65536");
-sqlite.pragma("foreign_keys = ON");
-sqlite.pragma("temp_store = MEMORY");
 
-export const db = drizzle(sqlite, { schema });
+await configurePragmas();
+
+export const db = drizzle(client, { schema });
 export type DB = typeof db;
 
-export function getInMemoryDB(runMigrations: boolean) {
-  const mem = new Database(":memory:");
-  const db = drizzle(mem, { schema, logger: false });
+// テスト用インメモリDB（libsql版）
+export async function getInMemoryDB(runMigrations: boolean) {
+  const memClient = createClient({ url: ":memory:" });
+  const db = drizzle(memClient, { schema, logger: false });
   if (runMigrations) {
-    migrate(db, { migrationsFolder: path.resolve(__dirname, "./drizzle") });
+    await migrate(db, {
+      migrationsFolder: path.resolve(__dirname, "./drizzle"),
+    });
   }
   return db;
 }

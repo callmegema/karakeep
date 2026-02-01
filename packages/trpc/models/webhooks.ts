@@ -90,7 +90,7 @@ export class Webhook {
         ),
       );
 
-    if (res.changes === 0) {
+    if (res.rowsAffected === 0) {
       throw new TRPCError({ code: "NOT_FOUND" });
     }
   }

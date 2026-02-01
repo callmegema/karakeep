@@ -1,0 +1,160 @@
+################# Base Builder ##############
+FROM node:24-slim AS base
+
+WORKDIR /app
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+
+# https://github.com/karakeep-app/karakeep/issues/967
+RUN npm install -g corepack@0.31.0 && corepack enable
+
+# libsql doesn't require native build tools (make, g++, python3)
+
+# Copy package files for dependency installation
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY apps/cli/package.json ./apps/cli/
+COPY apps/mcp/package.json ./apps/mcp/
+COPY apps/web/package.json ./apps/web/
+COPY apps/workers/package.json ./apps/workers/
+COPY packages/api/package.json ./packages/api/
+COPY packages/db/package.json ./packages/db/
+COPY packages/open-api/package.json ./packages/open-api/
+COPY packages/plugins/package.json ./packages/plugins/
+COPY packages/sdk/package.json ./packages/sdk/
+COPY packages/shared-react/package.json ./packages/shared-react/
+COPY packages/shared-server/package.json ./packages/shared-server/
+COPY packages/shared/package.json ./packages/shared/
+COPY packages/trpc/package.json ./packages/trpc/
+COPY tooling/github/package.json ./tooling/github/
+COPY tooling/oxlint/package.json ./tooling/oxlint/
+COPY tooling/prettier/package.json ./tooling/prettier/
+COPY tooling/tailwind/package.json ./tooling/tailwind/
+COPY tooling/typescript/package.json ./tooling/typescript/
+COPY ./patches ./patches
+
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+
+# Build the db migration script
+RUN cd packages/db && \
+    pnpm exec ncc build migrate.ts -o /db_migrations && \
+    cp -R drizzle /db_migrations
+
+# Compile the web app
+RUN (cd apps/web && pnpm exec next build --experimental-build-mode compile)
+
+# Build the worker code
+RUN (cd apps/workers && pnpm build)
+RUN pnpm deploy --node-linker=isolated --filter @karakeep/workers --prod /prod/workers
+
+################# Web Container for Cloud Run ##############
+
+FROM node:24-slim AS web
+LABEL org.opencontainers.image.source="https://github.com/karakeep-app/karakeep"
+WORKDIR /app
+
+ARG SERVER_VERSION=nightly
+ENV SERVER_VERSION=${SERVER_VERSION}
+
+ENV PORT 3000
+ENV HOSTNAME "0.0.0.0"
+EXPOSE 3000
+
+# Install runtime deps (minimal for Cloud Run)
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        ca-certificates \
+        curl \
+        graphicsmagick \
+        ghostscript \
+        libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create symlink for jemalloc based on architecture
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ln -s /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so; \
+    else \
+        ln -s /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so; \
+    fi
+
+ENV NODE_ENV production
+ENV NEXT_TELEMETRY_DISABLED 1
+ENV LD_PRELOAD="/usr/local/lib/libjemalloc.so"
+
+# Copy web app
+COPY --from=base --chown=node:node /app/apps/web/.next/standalone ./
+COPY --from=base /app/apps/web/public ./apps/web/public
+COPY --from=base /db_migrations /db_migrations
+
+# Set the correct permission for prerender cache
+RUN mkdir -p ./apps/web/.next && chown node:node ./apps/web/.next
+
+# Automatically leverage output traces to reduce image size
+COPY --from=base --chown=node:node /app/apps/web/.next/static ./apps/web/.next/static
+
+# Create startup script
+RUN echo '#!/bin/sh\n\
+node /db_migrations/index.js\n\
+exec node apps/web/server.js' > /app/start.sh && chmod +x /app/start.sh
+
+USER node
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 CMD curl -f http://127.0.0.1:3000/api/health || exit 1
+
+CMD ["/app/start.sh"]
+
+################# Workers Container for Cloud Run ##############
+
+FROM node:24-slim AS workers
+LABEL org.opencontainers.image.source="https://github.com/karakeep-app/karakeep"
+WORKDIR /app
+
+ARG SERVER_VERSION=nightly
+ENV SERVER_VERSION=${SERVER_VERSION}
+
+# Install runtime deps for workers
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        ca-certificates \
+        curl \
+        graphicsmagick \
+        ghostscript \
+        libjemalloc2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install yt-dlp
+ARG TARGETARCH
+RUN case ${TARGETARCH} in \
+        "amd64")  YTDLP_FILE=yt-dlp_linux ;; \
+        "arm64")  YTDLP_FILE=yt-dlp_linux_aarch64 ;; \
+        *) echo "Unsupported arch: ${TARGETARCH}" && exit 1 ;; \
+    esac \
+    && curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_FILE} -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
+# Create symlink for jemalloc based on architecture
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+        ln -s /usr/lib/aarch64-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so; \
+    else \
+        ln -s /usr/lib/x86_64-linux-gnu/libjemalloc.so.2 /usr/local/lib/libjemalloc.so; \
+    fi
+
+ENV NODE_ENV production
+ENV LD_PRELOAD="/usr/local/lib/libjemalloc.so"
+
+# Copy workers app
+COPY --from=base /prod/workers /app/apps/workers
+
+# Cloud Run requires a port to be exposed for health checks
+ENV PORT 8080
+EXPOSE 8080
+
+USER node
+
+WORKDIR /app/apps/workers
+
+CMD ["node", "index.js"]

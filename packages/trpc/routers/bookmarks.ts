@@ -383,7 +383,7 @@ export const bookmarksAppRouter = router({
             .update(bookmarkLinks)
             .set(linkUpdateData)
             .where(eq(bookmarkLinks.id, input.bookmarkId));
-          if (result.changes == 0) {
+          if (result.rowsAffected == 0) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message:
@@ -401,7 +401,7 @@ export const bookmarksAppRouter = router({
             })
             .where(eq(bookmarkTexts.id, input.bookmarkId));
 
-          if (result.changes == 0) {
+          if (result.rowsAffected == 0) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message:
@@ -419,7 +419,7 @@ export const bookmarksAppRouter = router({
             })
             .where(and(eq(bookmarkAssets.id, input.bookmarkId)));
 
-          if (result.changes == 0) {
+          if (result.rowsAffected == 0) {
             throw new TRPCError({
               code: "BAD_REQUEST",
               message:
