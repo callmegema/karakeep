@@ -8,7 +8,12 @@ ENV PATH="$PNPM_HOME:$PATH"
 # https://github.com/karakeep-app/karakeep/issues/967
 RUN npm install -g corepack@0.31.0 && corepack enable
 
-# libsql doesn't require native build tools (make, g++, python3)
+# Install build tools for native modules (better-sqlite3 required by liteque)
+RUN apt-get update && apt-get install --no-install-recommends -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy package files for dependency installation
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
