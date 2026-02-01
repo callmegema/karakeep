@@ -1,0 +1,104 @@
+steps:
+  # =====================
+  # Web イメージのビルド
+  # =====================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-web'
+    args:
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.cloudrun'
+      - '--target'
+      - 'web'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-web:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-web:latest'
+      - '.'
+
+  # =====================
+  # Workers イメージのビルド
+  # =====================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-workers'
+    args:
+      - 'build'
+      - '-f'
+      - 'docker/Dockerfile.cloudrun'
+      - '--target'
+      - 'workers'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-workers:$COMMIT_SHA'
+      - '-t'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-workers:latest'
+      - '.'
+
+  # =====================
+  # イメージをプッシュ
+  # =====================
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-web'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-web'
+    waitFor: ['build-web']
+
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-workers'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-workers'
+    waitFor: ['build-workers']
+
+  # =====================
+  # Cloud Run (Web) にデプロイ
+  # =====================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-web'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'karakeep-web'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-web:$COMMIT_SHA'
+      - '--region=${_REGION}'
+      - '--port=3000'
+      - '--memory=1Gi'
+      - '--cpu=1'
+      - '--min-instances=0'
+      - '--max-instances=3'
+      - '--allow-unauthenticated'
+    waitFor: ['push-web']
+
+  # =====================
+  # Cloud Run (Workers) にデプロイ
+  # =====================
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-workers'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'karakeep-workers'
+      - '--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-workers:$COMMIT_SHA'
+      - '--region=${_REGION}'
+      - '--port=8080'
+      - '--memory=2Gi'
+      - '--cpu=1'
+      - '--min-instances=0'
+      - '--max-instances=2'
+      - '--no-allow-unauthenticated'
+    waitFor: ['push-workers']
+
+substitutions:
+  _REGION: europe-west4
+  _REPO: karakeep
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+images:
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-web'
+  - '${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/karakeep-workers'
